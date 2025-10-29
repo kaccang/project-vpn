@@ -1,0 +1,60 @@
+#!/bin/bash
+
+set -euo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+source "$SCRIPT_DIR/lib/common.sh"
+source "$SCRIPT_DIR/lib/service_manager.sh"
+
+HELPER="$SCRIPT_DIR/lib/xray_accounts.py"
+
+ensure_tool() {
+    command -v "$1" >/dev/null 2>&1 || { echo "Perintah $1 diperlukan." >&2; exit 1; }
+}
+
+ensure_tool python3
+
+mapfile -t accounts < <(python3 "$HELPER" list --kind vmess | python3 -c 'import json,sys; data=json.load(sys.stdin); [print(f"{item.get(\"name\",\"---\")}|{item.get(\"expiry\",\"-\")}") for item in data]')
+
+if [[ ${#accounts[@]} -eq 0 ]]; then
+    echo "Tidak ada akun vmess."
+    read -n 1 -s -r -p "Tekan tombol untuk kembali ke menu"
+    echo ""
+    [[ -x "$SCRIPT_DIR/menu" ]] && "$SCRIPT_DIR/menu"
+    exit 0
+fi
+
+echo "──────────────────────────────────────────"
+echo " Daftar Akun VMess"
+echo "──────────────────────────────────────────"
+for idx in "${!accounts[@]}"; do
+    IFS='|' read -r name exp <<<"${accounts[$idx]}"
+    printf " %2d) %-20s Exp: %s\n" $((idx + 1)) "$name" "$exp"
+done
+echo "──────────────────────────────────────────"
+
+selection=""
+while true; do
+    read -rp "Pilih nomor akun yang ingin dihapus: " selection || exit 1
+    if [[ "$selection" =~ ^[0-9]+$ ]] && (( selection >= 1 && selection <= ${#accounts[@]} )); then
+        break
+    fi
+    echo "Nomor tidak valid."
+done
+
+IFS='|' read -r selected_name _ <<<"${accounts[$((selection - 1))]}"
+
+read -rp "Yakin hapus akun '${selected_name}'? (y/N): " confirm
+if [[ "${confirm,,}" != "y" ]]; then
+    echo "Dibatalkan."
+    [[ -x "$SCRIPT_DIR/menu" ]] && "$SCRIPT_DIR/menu"
+    exit 0
+fi
+
+python3 "$HELPER" delete --kind vmess --name "$selected_name"
+service_restart "$XRAY_SERVICE_NAME" || true
+
+echo "Akun '${selected_name}' berhasil dihapus."
+read -n 1 -s -r -p "Tekan tombol untuk kembali ke menu"
+echo ""
+[[ -x "$SCRIPT_DIR/menu" ]] && "$SCRIPT_DIR/menu"
