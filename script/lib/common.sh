@@ -1,0 +1,13 @@
+#!/bin/bash
+
+SCRIPT_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+PROJECT_ROOT="${PROJECT_ROOT_OVERRIDE:-$(cd "${SCRIPT_ROOT}/.." && pwd)}"
+
+XRAY_CONFIG_PATH="${XRAY_CONFIG_PATH:-/etc/xray/config.json}"
+XRAY_SERVICE_NAME="${XRAY_SERVICE_NAME:-xray}"
+NGINX_SERVICE_NAME="${NGINX_SERVICE_NAME:-nginx}"
+
+TLS_PORT="${TLS_PORT:-443}"
+NTLS_PORT="${NTLS_PORT:-80}"
+
+DATA_DIR="${PROJECT_ROOT}/data"
