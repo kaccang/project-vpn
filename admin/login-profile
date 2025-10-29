@@ -1,0 +1,72 @@
+#!/bin/bash
+
+set -euo pipefail
+
+LIB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/lib" && pwd)
+source "${LIB_DIR}/common.sh"
+
+if ! command -v docker >/dev/null 2>&1; then
+    echo "Docker tidak tersedia di host ini."
+    exit 1
+fi
+
+profiles_json=$(run_helper list)
+readarray -t profiles < <(printf '%s\n' "$profiles_json" | python3 -c 'import json,sys; data=json.load(sys.stdin); [print(json.dumps(item)) for item in data]')
+
+if [[ ${#profiles[@]} -eq 0 ]]; then
+    echo "Belum ada profile."
+    read -n 1 -s -r -p "Tekan tombol untuk kembali ke menu"
+    echo ""
+    "${LIB_DIR}/../menu-profile"
+    exit 0
+fi
+
+echo "============================================"
+echo " Login ke Container Profile"
+echo "============================================"
+idx=1
+for item in "${profiles[@]}"; do
+    python3 - <<PY
+import json,sys
+data=json.loads(sys.stdin.read())
+print("{no:>2}) {name:<15} Container:{container:<20} Status:{status}".format(
+    no=$idx,
+    name=data.get("name",""),
+    container=data.get("container_name") or "-",
+    status=data.get("status","unknown")
+))
+PY
+    idx=$((idx + 1))
+done
+
+selection=""
+while true; do
+    read -rp "Pilih nomor: " selection || exit 1
+    if [[ "$selection" =~ ^[0-9]+$ ]] && (( selection >= 1 && selection <= ${#profiles[@]} )); then
+        break
+    fi
+    echo "Nomor tidak valid."
+done
+
+profile_json="${profiles[$((selection - 1))]}"
+container=$(printf '%s\n' "$profile_json" | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data.get("container_name") or "")')
+name=$(printf '%s\n' "$profile_json" | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data.get("name",""))')
+
+if [[ -z "$container" ]]; then
+    echo "Profile $name belum memiliki container aktif."
+    read -n 1 -s -r -p "Tekan tombol untuk kembali ke menu"
+    echo ""
+    "${LIB_DIR}/../menu-profile"
+    exit 0
+fi
+
+if ! docker ps -a --format '{{.Names}}' | grep -qx "$container"; then
+    echo "Container $container tidak ditemukan."
+    read -n 1 -s -r -p "Tekan tombol untuk kembali ke menu"
+    echo ""
+    "${LIB_DIR}/../menu-profile"
+    exit 0
+fi
+
+echo "Masuk ke container $container ..."
+exec docker exec -it "$container" /bin/bash
