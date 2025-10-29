@@ -3,9 +3,14 @@ import argparse
 import json
 import os
 import sqlite3
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List
+
+try:  # Python 3.11+
+    from datetime import UTC  # type: ignore[attr-defined]
+except ImportError:  # Python 3.10 fallback
+    UTC = timezone.utc
 
 PROJECT_ROOT = Path(
     os.environ.get(
