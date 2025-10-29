@@ -1,0 +1,86 @@
+#!/bin/bash
+
+## editkan config/backup agar bisa dijalankan duluar container ya, dan systemctl tidak support disini yaaa kamu harus mengganti nya mungkin supervisior?
+
+
+clear
+xp
+sleep $((RANDOM % 20))
+
+echo "Clearing log files..."
+echo "" > /var/log/xray/access.log
+echo "" > /var/log/xray/error.log
+
+domain=$(cat /etc/xray/domain 2>/dev/null || echo "unknown-domain")
+IP=$(wget -qO- ipv4.icanhazip.com || hostname -I | awk '{print $1}')
+date=$(date +"%Y-%m-%d")
+timestamp=$(date +"%H%M%S")
+
+echo "Backing up vnstat database..."
+rm -f /etc/xray/vnstat.db
+cp /var/lib/vnstat/vnstat.db /etc/xray/ 2>/dev/null || true
+
+TOKEN_FILE="/etc/.token" # ganti pakai .env?
+SKIP_TELEGRAM=0
+
+if [ -f "$TOKEN_FILE" ]; then
+CHATID=$(grep -E '^CHATID=' "$TOKEN_FILE" | cut -d= -f2- | tr -d '"' || true)
+KEY=$(grep -E '^KEY=' "$TOKEN_FILE" | cut -d= -f2- | tr -d '"' || true)
+
+if [ -z "$CHATID" ] || [ -z "$KEY" ]; then
+echo "WARNING: CHATID or KEY empty in $TOKEN_FILE. Telegram upload will be skipped." >&2
+SKIP_TELEGRAM=1
+else
+echo "Telegram token loaded."
+TELEGRAM_API="https://api.telegram.org/bot$KEY/sendDocument"
+fi
+else
+echo "WARNING: token file not found ($TOKEN_FILE). Telegram upload will be skipped." >&2
+SKIP_TELEGRAM=1
+fi
+
+RCLONE_FILENAME="${RCLONE_FILENAME:-}"
+ENABLE_0X0="${ENABLE_0X0:-false}"
+
+backup_file="$domain-$IP-$date-$timestamp.zip"
+echo "Creating backup file: $backup_file"
+cd /etc/xray/ || exit 1
+zip -r "$backup_file" . > /dev/null 2>&1
+
+upload="disabled"
+if [ "$ENABLE_0X0" = "true" ]; then
+echo "Uploading to 0x0.st..." upload=$(curl -s -F "file=@$backup_file" https://0x0.st || echo "upload-failed")
+if [ -z "$upload" ]; then
+upload="upload-failed"
+fi
+else
+echo "0x0.st upload is disabled."
+fi
+
+echo "Uploading to Proton..."
+if [ -n "$RCLONE_FILENAME" ]; then
+remote_path="proton:/backup/vps/$domain/$RCLONE_FILENAME"
+else
+remote_path="proton:/backup/vps/$domain/$backup_file"
+fi
+
+rclone copyto "$backup_file" "$remote_path" >/dev/null 2>&1 || echo "rclone upload failed" >&2
+
+if [ "$SKIP_TELEGRAM" -eq 0 ]; then
+echo "Sending to Telegram..."
+curl -s -F chat_id="$CHATID" \
+-F document=@"$backup_file" \
+-F caption="Backup VPN
+Domain: $domain
+IP: $IP
+Direct: $upload" \
+"$TELEGRAM_API" > /dev/null || echo "Telegram send failed" >&2
+else
+echo "Telegram skipped."
+fi
+
+echo "Cleaning up..."
+rm -f "$backup_file"
+
+echo -e "\nBackup completed successfully!"
+echo "Direct link (0x0.st): $upload"
