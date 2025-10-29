@@ -1,0 +1,104 @@
+#!/bin/bash
+
+set -euo pipefail
+
+LIB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/lib" && pwd)
+source "${LIB_DIR}/common.sh"
+
+select_profile() {
+    local profiles_json
+    profiles_json=$(run_helper list)
+    readarray -t profiles < <(printf '%s\n' "$profiles_json" | python3 -c 'import json,sys; data=json.load(sys.stdin); [print(json.dumps(item)) for item in data]')
+    if [[ ${#profiles[@]} -eq 0 ]]; then
+        echo "Belum ada profile."
+        return 1
+    fi
+    echo "============================================"
+    echo " Pilih Profile untuk Restore"
+    echo "============================================"
+    local idx=1
+    for item in "${profiles[@]}"; do
+        python3 - <<PY
+import json,sys
+data=json.loads(sys.stdin.read())
+print("{no:>2}) {name:<15} Container:{container:<20} Restore:{restore}".format(
+    no=$idx,
+    name=data.get("name",""),
+    container=data.get("container_name") or "-",
+    restore=data.get("restore_link") or "-"
+))
+PY
+        idx=$((idx + 1))
+    done
+    local selection
+    while true; do
+        read -rp "Pilih nomor: " selection || return 1
+        if [[ "$selection" =~ ^[0-9]+$ ]] && (( selection >= 1 && selection <= ${#profiles[@]} )); then
+            break
+        fi
+        echo "Nomor tidak valid."
+    done
+    printf '%s\n' "${profiles[$((selection - 1))]}"
+}
+
+restore_single() {
+    local profile_json
+    if ! profile_json=$(select_profile); then
+        return
+    fi
+    local name container restore
+    name=$(printf '%s\n' "$profile_json" | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data.get("name",""))')
+    container=$(printf '%s\n' "$profile_json" | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data.get("container_name") or "")')
+    restore=$(printf '%s\n' "$profile_json" | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data.get("restore_link") or "")')
+
+    read -rp "Restore link (${restore:-kosong}): " custom
+    if [[ -n "$custom" ]]; then
+        restore="$custom"
+    fi
+    if [[ -z "$restore" ]]; then
+        echo "Restore link tidak tersedia."
+        return
+    fi
+    if ! command -v docker >/dev/null 2>&1 || [[ -z "$container" ]]; then
+        echo "Docker/container tidak tersedia, lakukan restore manual."
+        return
+    fi
+    echo "Restore profile $name dengan backup $restore"
+    docker exec "$container" bash -lc "curl -fsSL '$restore' -o /tmp/backup.tar.gz && mkdir -p /etc/xray && tar -xf /tmp/backup.tar.gz -C /etc/xray && rm -f /tmp/backup.tar.gz" || echo "Restore gagal."
+    echo "Selesai. Pastikan untuk me-restart layanan di container."
+}
+
+restore_global() {
+    read -rp "Masukkan direct link backup global (tar.gz): " link
+    if [[ -z "$link" ]]; then
+        echo "Link wajib diisi."
+        return
+    fi
+    mkdir -p "$DATA_DIR"
+    dest="${DATA_DIR}/global-restore.tar.gz"
+    echo "Mengunduh backup global..."
+    if ! curl -fsSL "$link" -o "$dest"; then
+        echo "Gagal mengunduh backup."
+        return
+    fi
+    echo "Ekstrak ke project root..."
+    tar -xf "$dest" -C "$PROJECT_ROOT" || { echo "Ekstrak gagal."; return; }
+    echo "Pastikan menjalankan provisioning container kembali sesuai kebutuhan."
+}
+
+echo "============================================"
+echo " Restore Manager"
+echo "============================================"
+echo " 1) Restore satu profile"
+echo " 2) Restore global"
+echo " 3) Kembali"
+echo "--------------------------------------------"
+read -rp "Pilih menu [1-3]: " choice
+case "$choice" in
+    1) restore_single ;;
+    2) restore_global ;;
+esac
+
+read -n 1 -s -r -p "Tekan tombol untuk kembali ke menu"
+echo ""
+"${LIB_DIR}/../menu-profile"
