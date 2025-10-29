@@ -1,0 +1,200 @@
+#!/bin/bash
+
+set -euo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+source "$SCRIPT_DIR/lib/common.sh"
+source "$SCRIPT_DIR/lib/service_manager.sh"
+
+HELPER="$SCRIPT_DIR/lib/xray_accounts.py"
+
+GREEN="\e[32m"
+CYAN="\e[36m"
+YELLOW="\e[33m"
+RED="\e[31m"
+NC="\e[0m"
+
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+ensure_tool() {
+    local cmd="$1"
+    command_exists "$cmd" || { echo "Perintah $cmd dibutuhkan." >&2; exit 1; }
+}
+
+status_color() {
+    case "$1" in
+        Running|Active) echo -e "${GREEN}$1${NC}" ;;
+        Stopped|Inactive|Dead|Expired) echo -e "${RED}$1${NC}" ;;
+        *) echo -e "${YELLOW}$1${NC}" ;;
+    esac
+}
+
+ensure_tool python3
+
+OS_INFO=$(lsb_release -ds 2>/dev/null || grep '^NAME=' /etc/os-release | cut -d\" -f2)
+KERNEL_INFO=$(uname -sr)
+UPTIME_INFO=$(uptime -p | sed 's/up //')
+DISK_USAGE=$(df -h / | awk 'NR==2 {print $3 " / " $2 " (" $5 ")"}')
+CPU_MODEL=$(awk -F': ' '/model name/{print $2; exit}' /proc/cpuinfo)
+CPU_CORES=$(nproc)
+RAM_USED=$(free -m | awk '/Mem:/ {print $3}')
+RAM_TOTAL=$(free -m | awk '/Mem:/ {print $2}')
+ISP=$(cat /etc/xray/isp 2>/dev/null || echo "Unknown")
+IP=$( (curl -s --max-time 3 -4 ifconfig.me || hostname -I | awk '{print $1}') 2>/dev/null )
+
+license_info=$(curl -s --max-time 5 https://s3.tebi.io/v2ray/v1/license.txt || true)
+expiration_date=$(echo "$license_info" | grep -w "$IP" | awk '{print $2}' | sort -r | head -n1)
+
+days=0
+if [[ -n "$expiration_date" ]]; then
+    exp_sec=$(date -d "$expiration_date" +%s 2>/dev/null || echo 0)
+    now_sec=$(date +%s)
+    if [[ "$exp_sec" =~ ^[0-9]+$ ]]; then
+        diff_sec=$((exp_sec - now_sec))
+        days=$((diff_sec / 86400))
+        (( days < 0 )) && days=0
+    fi
+fi
+
+xray_status_raw=$(service_status "$XRAY_SERVICE_NAME")
+nginx_status_raw=$(service_status "$NGINX_SERVICE_NAME")
+
+if [[ $days -eq 0 ]]; then
+    service_stop "$XRAY_SERVICE_NAME" || true
+    xray_status_raw="Expired"
+fi
+
+xray_STATUS=$(status_color "$xray_status_raw")
+NGINX_STATUS=$(status_color "$nginx_status_raw")
+
+vmess_count=$(python3 "$HELPER" list --kind vmess | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0)
+vless_count=$(python3 "$HELPER" list --kind vless | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0)
+trojan_count=$(python3 "$HELPER" list --kind trojan | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0)
+
+upcoming=$(python3 - <<PY
+import datetime
+import json
+import subprocess
+import sys
+
+helper = "${HELPER}"
+today = datetime.date.today()
+threshold = 5
+entries = []
+
+def load(kind):
+    result = subprocess.run(
+        ["python3", helper, "list", "--kind", kind],
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    return json.loads(result.stdout)
+
+for kind in ["vmess", "vless", "trojan"]:
+    try:
+        data = load(kind)
+    except subprocess.CalledProcessError:
+        continue
+    for item in data:
+        expiry = item.get("expiry")
+        name = item.get("name")
+        if not name or not expiry:
+            continue
+        try:
+            exp_date = datetime.datetime.strptime(expiry, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        diff = (exp_date - today).days
+        if diff <= threshold:
+            entries.append(f"{kind}:{name}:{expiry}:{diff}")
+
+for line in entries:
+    print(line)
+PY
+)
+
+vnstat_summary=$(vnstat -m --oneline 2>/dev/null || echo "vnstat data tidak tersedia")
+
+clear
+echo "--------------------------------------------"
+echo "           SYSTEM INFORMATION               "
+echo "--------------------------------------------"
+echo -e " ${GREEN}OS          :${NC} $OS_INFO"
+echo -e " ${GREEN}Kernel      :${NC} $KERNEL_INFO"
+echo -e " ${GREEN}Uptime      :${NC} $UPTIME_INFO"
+echo -e " ${CYAN}CPU         :${NC} $CPU_MODEL ($CPU_CORES cores)"
+echo -e " ${CYAN}Disk Usage  :${NC} $DISK_USAGE"
+echo -e " ${CYAN}RAM Usage   :${NC} ${RAM_USED}MB / ${RAM_TOTAL}MB"
+echo -e " ${YELLOW}Organization:${NC} $ISP"
+echo -e " ${YELLOW}IP Address  :${NC} $IP"
+echo "--------------------------------------------"
+echo "           SERVICE STATUS                   "
+echo "--------------------------------------------"
+echo -e " Nginx Status    : $NGINX_STATUS"
+echo -e " Xray Status     : $xray_STATUS"
+echo -e " Expired Lisense : $(if [ $days -eq 0 ]; then echo -e \"${RED}0 days (EXPIRED)${NC}\"; else echo -e \"${GREEN}${days} days${NC}\"; fi)"
+echo "--------------------------------------------"
+echo -e " VNStat (monthly): $vnstat_summary"
+
+if [[ -n "$upcoming" ]]; then
+    echo "--------------------------------------------"
+    echo " Akun akan kedaluwarsa (< =5 hari)"
+    while IFS=':' read -r kind name exp diff; do
+        [[ -z "$kind" ]] && continue
+        printf " - %-6s %-15s Exp: %s (%s hari)\n" "$kind" "$name" "$exp" "$diff"
+    done <<<"$upcoming"
+fi
+
+echo "--------------------------------------------"
+echo ""
+printf "┌────────────────────────────────────────────┐\n"
+printf "│            XRAY VPN ACCOUNT STATUS         │\n"
+printf "├────────────────────────────────────────────┤\n"
+printf "│  VMess  : ${GREEN}%-3s${NC}   VLess : ${YELLOW}%-3s${NC}   Trojan : ${CYAN}%-3s${NC} │\n" "$vmess_count" "$vless_count" "$trojan_count"
+printf "└────────────────────────────────────────────┘\n"
+echo ""
+echo "                 MAIN MENU                  "
+echo "--------------------------------------------"
+echo "  1. Create Vmess"
+echo "  2. Delete Vmess"
+echo "  3. Renew Vmess"
+echo "  4. Check Vmess"
+echo "  5. Check User Vmess"
+echo ""
+echo "  6. Create Vless"
+echo "  7. Delete Vless"
+echo "  8. Renew Vless"
+echo "  9. Check Vless"
+echo "  10. Check User Vless"
+echo ""
+echo "  11. Create Trojan"
+echo "  12. Delete Trojan"
+echo "  13. Renew Trojan"
+echo "  14. Check Trojan"
+echo "  15. Check User Trojan"
+echo "  16. Jalankan Auto Clean Expired"
+echo "--------------------------------------------"
+
+read -rp "Pilih menu [1-16]: " menu
+case $menu in
+    1) "$SCRIPT_DIR/add-vmess" ;;
+    2) "$SCRIPT_DIR/del-vmess" ;;
+    3) "$SCRIPT_DIR/renew-vmess" ;;
+    4) "$SCRIPT_DIR/cek-vmess" ;;
+    5) "$SCRIPT_DIR/user-vmess" ;;
+    6) "$SCRIPT_DIR/add-vless" ;;
+    7) "$SCRIPT_DIR/del-vless" ;;
+    8) "$SCRIPT_DIR/renew-vless" ;;
+    9) "$SCRIPT_DIR/cek-vless" ;;
+    10) "$SCRIPT_DIR/user-vless" ;;
+    11) "$SCRIPT_DIR/add-trojan" ;;
+    12) "$SCRIPT_DIR/del-trojan" ;;
+    13) "$SCRIPT_DIR/renew-trojan" ;;
+    14) "$SCRIPT_DIR/cek-trojan" ;;
+    15) "$SCRIPT_DIR/user-trojan" ;;
+    16) "$SCRIPT_DIR/xp" ;;
+    *) echo "Pilihan tidak valid." ;;
+esac
