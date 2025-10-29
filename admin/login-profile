@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-LIB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/lib" && pwd)
+LIB_DIR=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/lib" && pwd)
 source "${LIB_DIR}/common.sh"
 
 if ! command -v docker >/dev/null 2>&1; then
