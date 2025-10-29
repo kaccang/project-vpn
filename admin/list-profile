@@ -1,0 +1,48 @@
+#!/bin/bash
+
+set -euo pipefail
+
+LIB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/lib" && pwd)
+source "${LIB_DIR}/common.sh"
+
+profiles_json=$(run_helper list)
+
+readarray -t profiles < <(printf '%s\n' "$profiles_json" | python3 -c 'import json,sys; data=json.load(sys.stdin); [print(json.dumps(item)) for item in data]')
+
+if [[ ${#profiles[@]} -eq 0 ]]; then
+    echo "Belum ada profile."
+    read -n 1 -s -r -p "Tekan tombol untuk kembali ke menu"
+    echo ""
+    "${LIB_DIR}/../menu-profile"
+    exit 0
+fi
+
+printf "%-3s %-15s %-18s %-10s %-10s %-12s %-10s %-8s %-8s\n" "No" "Nama" "Domain" "CPU(%)" "RAM(MB)" "SSH Port" "Exp Date" "Days" "BW Rem"
+printf "%-3s %-15s %-18s %-10s %-10s %-12s %-10s %-8s %-8s\n" "---" "---------------" "------------------" "--------" "--------" "------------" "----------" "--------" "-------"
+
+idx=1
+for item in "${profiles[@]}"; do
+    IDX=$idx python3 - <<'PY' <<<"$item"
+import json, os, sys
+data = json.loads(sys.stdin.read())
+idx = int(os.environ["IDX"])
+print("{no:>3} {name:<15} {domain:<18} {cpu:<10} {ram:<10} {ssh:<12} {exp:<10} {days:<8} {bw:<8}".format(
+    no=idx,
+    name=data.get("name",""),
+    domain=data.get("domain",""),
+    cpu=data.get("cpu_percent",""),
+    ram=data.get("ram_mb",""),
+    ssh=data.get("ssh_port",""),
+    exp=data.get("expires_at",""),
+    days=data.get("remaining_days",""),
+    bw="{:.2f}".format(data.get("remaining_bandwidth_tb",0.0))
+))
+PY
+    idx=$((idx + 1))
+done
+
+done
+
+read -n 1 -s -r -p "Tekan tombol untuk kembali ke menu"
+echo ""
+"${LIB_DIR}/../menu-profile"
