@@ -1,32 +1,31 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `admin/`: rencana skrip CLI semi-GUI untuk manajemen profile/container (add, list, extend, backup). Implementasi baru harus membaca catatan pada setiap file.
-- `config/`: konfigurasi layanan yang berjalan di container (`config.json`, `nginx.conf`) serta utilitas seperti `cert` dan `backup`. Pastikan perubahan tetap kompatibel dengan lingkungan tanpa `systemctl` dan `crontab`.
-- `script/`: kumpulan skrip bash yang dieksekusi di dalam container Ubuntu 24.04 untuk mengelola akun Xray (vmess, vless, trojan). Jaga struktur komentar marker (`###`, `#&`, `#!`) karena parser mengandalkannya.
-- `docs/`: dokumentasi publik; lengkapi sebelum rilis. `NOTE.MD` dan `RULES.MD` bersifat internal—pastikan tetap terabaikan oleh Git sesuai permintaan pemilik.
+- `admin/`: kumpulan utilitas semi-GUI untuk administrasi akun dan kontainer; baca komentar setiap skrip sebelum modifikasi karena menyimpan catatan alur.
+- `config/`: konfigurasi layanan Xray, nginx, sertifikat, dan backup; skrip harus tetap berjalan di lingkungan tanpa `systemctl` atau `crontab`.
+- `script/`: skrip Bash inti (vmess, vless, trojan) yang dipanggil menu utama; pertahankan marker komentar `###`, `#&`, `#!` agar parser internal tidak rusak.
+- `docs/`: dokumentasi publik yang siap dibagikan; berkas internal seperti `NOTE.MD` dan `RULES.MD` wajib tetap terabaikan Git.
+- `tests/` dan `data/`: skenario uji CLI serta database SQLite (`data/app.db`) untuk metadata profil; gunakan salinan sementara saat pengembangan.
 
 ## Build, Test, and Development Commands
-- `curl -fsSL https://raw.githubusercontent.com/kaccang/project-vpn/main/install.sh | bash`: instalasi cepat pada host baru (opsional variabel `INSTALL_*` untuk override lokasi).
-- `bash script/menu`: membuka dashboard utama; jalankan dari dalam container atau lingkungan terisolasi yang menyerupai container.
-- `bash config/backup`: membuat arsip konfigurasi dan mengunggah via rclone/Telegram (sesuaikan token dan mekanisme layanan non-systemd terlebih dahulu).
-- `sqlite3 data/app.db`: gunakan untuk memeriksa atau memperbarui metadata profile ketika database sudah terisi.
-- `bash tests/run_tests.sh`: rangkaian uji CLI (manipulasi akun Xray dan helper admin) menggunakan file konfigurasi dan database sementara.
-- Saat menambahkan dependensi, gunakan manajer paket yang kompatibel dengan container (mis. `apt-get`) dan siapkan alternatif supervisord untuk layanan yang sebelumnya memakai `systemctl`.
+- `curl -fsSL https://raw.githubusercontent.com/kaccang/project-vpn/main/install.sh | bash`: installer satu langkah untuk host baru; dukung override lokasi melalui variabel `INSTALL_*`.
+- `bash script/menu`: membuka dashboard interaktif di dalam container Ubuntu 24.04 atau lingkungan yang menyerupai.
+- `bash config/backup`: membuat arsip konfigurasi dan mengunggah via rclone/Telegram; sesuaikan token di `.env` lokal.
+- `sqlite3 data/app.db`: inspeksi atau perbarui metadata akun secara manual.
+- `bash tests/run_tests.sh`: menjalankan rangkaian uji CLI dengan file konfigurasi dan basis data sementara.
 
 ## Coding Style & Naming Conventions
-- Semua skrip menggunakan Bash; pertahankan indentasi dua atau empat spasi konsisten dan hindari tab.
-- Upayakan ASCII saja kecuali file sudah memakai karakter lain.
-- Variabel lingkungan sensitif (token, chat ID) harus dipindah ke `.env` atau file konfigurasi yang tidak dilacak Git.
-- Marker akun di `config/config.json` wajib mempertahankan prefiks (`###`, `#&`, `#!`) agar skrip tetap dapat parsir.
+- Seluruh kode menggunakan Bash; jaga indentasi 2 atau 4 spasi secara konsisten, tanpa tab.
+- Gunakan ASCII kecuali berkas sudah memakai karakter lain; beri komentar singkat hanya untuk blok yang kompleks.
+- Simpan kredensial (TOKEN, CHAT_ID, UUID) di `.env` atau konfigurasi non-tracked lalu referensikan melalui variabel lingkungan.
+- Ikuti pola penamaan skrip `verb-protocol` (`add-vmess`, `renew-trojan`) dan pertahankan prefiks marker di `config/config.json`.
 
 ## Testing Guidelines
-- Saat ini tidak ada kerangka uji otomatis; prioritaskan pengujian manual: jalankan skrip penambahan akun, cek, dan penghapusan untuk setiap protokol.
-- Simulasikan kondisi batas: username duplikat (case-insensitive), masa aktif habis, bandwidth tersisa 0, dan koneksi websocket.
-- Dokumentasikan hasil uji di `MEMORY.MD` atau catatan tim, termasuk perbaikan yang diperlukan.
+- Jalankan `bash tests/run_tests.sh` setelah menambah fitur, lalu lanjutkan uji manual untuk skenario penambahan, perpanjangan, dan penghapusan tiap protokol.
+- Verifikasi kasus tepi: username duplikat (abaikan kapital), masa aktif habis, kuota 0, serta koneksi websocket; catat hasilnya di `MEMORY.MD`.
+- Saat mengubah installer, lakukan uji `curl … | bash` pada VPS bersih atau container baru untuk memastikan dependensi otomatis terpasang.
 
 ## Commit & Pull Request Guidelines
-- Gunakan pesan ringkas dalam bahasa Indonesia atau Inggris, pola `feat:`, `fix:`, `docs:` dsb. Sertakan referensi file penting (`script/add-vmess`, `config/config.json`) agar reviewer mudah menelusuri.
-- Per PR, jelaskan tujuan, langkah pengujian, dan dampak pada container (mis. kebutuhan regenerasi sertifikat atau restart supervisord).
-- Lampirkan screenshot/terminal output bila perubahan memengaruhi UI CLI.
-- Pastikan `.md` internal (selain `docs/`) tetap diabaikan Git; perbarui `.gitignore` jika menambah file serupa.
+- Gunakan format pesan singkat `feat:`, `fix:`, `docs:` dengan menyebut file kunci; contoh `feat: tambah script/user-vless untuk provisioning`.
+- Setiap PR harus memuat ringkasan perubahan, langkah uji, serta dampak pada kontainer (mis. butuh regenerasi sertifikat atau restart supervisord).
+- Lampirkan tangkapan terminal bila UI CLI berubah dan pastikan berkas internal (`NOTE.MD`, `RULES.MD`, `MEMORY.MD`) tetap berada dalam `.gitignore`.
