@@ -1,0 +1,77 @@
+#!/bin/bash
+
+set -euo pipefail
+
+LIB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/lib" && pwd)
+source "${LIB_DIR}/common.sh"
+
+profiles_json=$(run_helper list)
+readarray -t profiles < <(printf '%s\n' "$profiles_json" | python3 -c 'import json,sys; data=json.load(sys.stdin); [print(json.dumps(item)) for item in data]')
+
+if [[ ${#profiles[@]} -eq 0 ]]; then
+    echo "Belum ada profile."
+    read -n 1 -s -r -p "Tekan tombol untuk kembali ke menu"
+    echo ""
+    "${LIB_DIR}/../menu-profile"
+    exit 0
+fi
+
+echo "============================================"
+echo " Profile - Tambah Bandwidth"
+echo "============================================"
+idx=1
+for item in "${profiles[@]}"; do
+    IDX=$idx python3 - <<'PY' <<<"$item"
+import json, os, sys
+data=json.loads(sys.stdin.read())
+idx=int(os.environ["IDX"])
+print("{no:>2}) {name:<15} Limit:{limit:.2f}TB Sisa:{remain:.2f}TB".format(
+    no=idx,
+    name=data.get("name",""),
+    limit=data.get("bandwidth_limit_tb",0.0),
+    remain=data.get("remaining_bandwidth_tb",0.0)
+))
+PY
+    idx=$((idx + 1))
+done
+
+selection=""
+while true; do
+    read -rp "Pilih nomor profile: " selection || exit 1
+    if [[ "$selection" =~ ^[0-9]+$ ]] && (( selection >= 1 && selection <= ${#profiles[@]} )); then
+        break
+    fi
+    echo "Nomor tidak valid."
+done
+
+profile_json="${profiles[$((selection - 1))]}"
+name=$(printf '%s\n' "$profile_json" | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data.get("name",""))')
+
+increment=""
+while true; do
+    read -rp "Tambah berapa TB: " increment || exit 1
+    if [[ "$increment" =~ ^[0-9]+(\.[0-9]+)?$ && $(python3 - <<PY
+val=float("$increment")
+print(1 if val > 0 else 0)
+PY
+) -eq 1 ]]; then
+        break
+    fi
+    echo "Masukkan angka > 0."
+done
+
+result=$(run_helper extend_bw --name "$name" --increment "$increment")
+
+echo "--------------------------------------------"
+echo "Limit bandwidth baru:"
+echo "$result" | python3 -m json.tool
+echo "--------------------------------------------"
+
+container=$(printf '%s\n' "$profile_json" | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data.get("container_name") or "")')
+if [[ -n "$container" ]]; then
+    echo "Reminder: sinkronkan limit bandwidth container '$container'."
+fi
+
+read -n 1 -s -r -p "Tekan tombol untuk kembali ke menu"
+echo ""
+"${LIB_DIR}/../menu-profile"
