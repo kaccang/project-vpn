@@ -1,0 +1,6 @@
+NOTE.MD
+RULES.MD
+MEMORY.MD
+__pycache__/
+tests/__pycache__/
+data/*.db
