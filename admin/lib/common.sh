@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-ADMIN_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+ADMIN_DIR=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
 PROJECT_ROOT="${PROJECT_ROOT_OVERRIDE:-$(cd "${ADMIN_DIR}/../.." && pwd)}"
 DATA_DIR="${PROJECT_ROOT}/data"
 DB_PATH="${DATA_DIR}/app.db"
