@@ -1,0 +1,98 @@
+#!/bin/bash
+
+set -euo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+source "$SCRIPT_DIR/lib/common.sh"
+source "$SCRIPT_DIR/lib/service_manager.sh"
+
+HELPER="$SCRIPT_DIR/lib/xray_accounts.py"
+CONFIG_PATH="$XRAY_CONFIG_PATH"
+DOMAIN_FILE="/etc/xray/domain"
+
+[[ -f "$CONFIG_PATH" ]] || { echo "Config tidak ditemukan di $CONFIG_PATH"; exit 1; }
+[[ -f "$DOMAIN_FILE" ]] || { echo "Domain belum diset di $DOMAIN_FILE"; exit 1; }
+
+domain=$(<"$DOMAIN_FILE")
+
+validate_user() {
+    local name="$1"
+    if [[ ${#name} -lt 2 || ${#name} -gt 20 ]]; then
+        echo "Username harus 2-20 karakter." >&2
+        return 1
+    fi
+    if [[ ! "$name" =~ ^[A-Za-z0-9_]+$ ]]; then
+        echo "Username hanya boleh huruf, angka, atau underscore." >&2
+        return 1
+    fi
+    return 0
+}
+
+prompt_username() {
+    local name
+    while true; do
+        read -rp "User: " name || exit 1
+        name="${name// /}"
+        validate_user "$name" || { echo ""; continue; }
+        if python3 "$HELPER" exists --kind trojan --name "$name" >/dev/null 2>&1; then
+            echo "Username sudah digunakan. Gunakan nama lain."
+            continue
+        fi
+        printf '%s\n' "$name"
+        return 0
+    done
+}
+
+prompt_days() {
+    local days
+    while true; do
+        read -rp "Expired (hari): " days || exit 1
+        if [[ "$days" =~ ^[0-9]+$ && "$days" -gt 0 ]]; then
+            printf '%s\n' "$days"
+            return 0
+        fi
+        echo "Masukkan angka hari yang valid."
+    done
+}
+
+ensure_tool() {
+    command -v "$1" >/dev/null 2>&1 || { echo "Perintah $1 diperlukan." >&2; exit 1; }
+}
+
+ensure_tool python3
+
+username=$(prompt_username)
+days=$(prompt_days)
+expiry=$(date -d "+$days days" +"%Y-%m-%d")
+password=$(cat /proc/sys/kernel/random/uuid)
+
+python3 "$HELPER" add --kind trojan --name "$username" --identifier "$password" --expiry "$expiry"
+
+service_restart "$XRAY_SERVICE_NAME" || true
+
+trojan_tls="trojan://${password}@${domain}:${TLS_PORT}?path=%2Ftrojan-ws&security=tls&host=${domain}&type=ws&sni=${domain}#${username}"
+trojan_ntls="trojan://${password}@${domain}:${NTLS_PORT}?path=%2Ftrojan-ws&security=none&host=${domain}&type=ws#${username}"
+
+cat <<INFO
+───────────────────
+         Add Xray/Trojan Account
+───────────────────
+Remarks     : $username
+Domain      : $domain
+Port TLS    : $TLS_PORT
+Port NTLS   : $NTLS_PORT
+Encryption  : none
+Path        : /trojan-ws
+Expired On  : $expiry
+───────────────────
+TLS Link: $trojan_tls
+───────────────────
+Non-TLS Link: $trojan_ntls
+───────────────────
+INFO
+
+read -n 1 -s -r -p "Tekan tombol apapun untuk kembali ke menu"
+echo ""
+if [[ -x "$SCRIPT_DIR/menu" ]]; then
+    "$SCRIPT_DIR/menu"
+fi
