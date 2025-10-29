@@ -1,0 +1,109 @@
+#!/bin/bash
+
+set -euo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+source "$SCRIPT_DIR/lib/common.sh"
+
+HELPER="$SCRIPT_DIR/lib/xray_accounts.py"
+DOMAIN_FILE="/etc/xray/domain"
+
+[[ -f "$DOMAIN_FILE" ]] || { echo "Domain belum diset di $DOMAIN_FILE"; exit 1; }
+domain=$(<"$DOMAIN_FILE")
+
+ensure_tool() {
+    command -v "$1" >/dev/null 2>&1 || { echo "Perintah $1 diperlukan." >&2; exit 1; }
+}
+
+ensure_tool python3
+
+mapfile -t accounts < <(python3 "$HELPER" list --kind vmess | python3 -c 'import json,sys; data=json.load(sys.stdin); [print(f"{item.get(\"name\",\"---\")}|{item.get(\"expiry\",\"-\")}|{item.get(\"id\",\"\")}") for item in data]')
+
+if [[ ${#accounts[@]} -eq 0 ]]; then
+    echo "Belum ada akun VMess."
+    exit 0
+fi
+
+echo ""
+echo "╔══════════════════════════════╗"
+echo "║        MENU CEK VMESS        ║"
+echo "╚══════════════════════════════╝"
+for idx in "${!accounts[@]}"; do
+    IFS='|' read -r name exp _ <<<"${accounts[$idx]}"
+    printf "  %2d. %-20s (Exp: %s)\n" $((idx + 1)) "$name" "$exp"
+done
+
+selection=""
+while true; do
+    read -rp ">> Pilih nomor akun [1-${#accounts[@]}]: " selection || exit 1
+    if [[ "$selection" =~ ^[0-9]+$ ]] && (( selection >= 1 && selection <= ${#accounts[@]} )); then
+        break
+    fi
+    echo "Nomor tidak valid."
+done
+
+IFS='|' read -r username expiry uuid <<<"${accounts[$((selection - 1))]}"
+
+b64encode() {
+    if base64 --help 2>&1 | grep -q -- "--wrap"; then
+        base64 --wrap=0
+    else
+        base64 | tr -d '\n'
+    fi
+}
+
+vmess_tls=$(cat <<EOF
+{
+  "v": "2",
+  "ps": "${username}",
+  "add": "${domain}",
+  "port": "${TLS_PORT}",
+  "id": "${uuid}",
+  "aid": "0",
+  "net": "ws",
+  "path": "/vmess",
+  "type": "none",
+  "host": "${domain}",
+  "tls": "tls"
+}
+EOF
+)
+
+vmess_ntls=$(cat <<EOF
+{
+  "v": "2",
+  "ps": "${username}",
+  "add": "${domain}",
+  "port": "${NTLS_PORT}",
+  "id": "${uuid}",
+  "aid": "0",
+  "net": "ws",
+  "path": "/vmess",
+  "type": "none",
+  "host": "${domain}",
+  "tls": "none"
+}
+EOF
+)
+
+vmesslink1="vmess://$(printf '%s' "$vmess_tls" | b64encode)"
+vmesslink2="vmess://$(printf '%s' "$vmess_ntls" | b64encode)"
+
+clear
+cat <<INFO
+───────────────────
+         Detail Akun Xray/Vmess
+───────────────────
+Remarks     : $username
+Domain      : $domain
+Port TLS    : $TLS_PORT
+Port NTLS   : $NTLS_PORT
+Encryption  : none
+Path        : /vmess
+Expired On  : $expiry
+───────────────────
+TLS Link: $vmesslink1
+───────────────────
+Non-TLS Link: $vmesslink2
+───────────────────
+INFO
