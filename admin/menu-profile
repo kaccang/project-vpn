@@ -1,0 +1,97 @@
+#!/bin/bash
+
+set -euo pipefail
+
+LIB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/lib" && pwd)
+source "${LIB_DIR}/common.sh"
+
+cpu_usage() {
+    if command -v mpstat >/dev/null 2>&1; then
+        mpstat 1 1 | awk '/Average:/ {printf "%.2f", 100 - $NF}'
+    else
+        read -r cpu user nice system idle rest < /proc/stat
+        sleep 0.5
+        read -r cpu2 user2 nice2 system2 idle2 rest2 < /proc/stat
+        total=$(( (user2+nice2+system2+idle2) - (user+nice+system+idle) ))
+        idle_diff=$(( idle2 - idle ))
+        usage=$(( 100 * (total - idle_diff) / total ))
+        printf "%d" "$usage"
+    fi
+}
+
+ram_usage() {
+    free -m | awk '/Mem:/ {printf "%dMB / %dMB", $3, $2}'
+}
+
+disk_usage() {
+    df -h / | awk 'NR==2 {print $3 " / " $2 " (" $5 ")"}'
+}
+
+profiles_json=$(run_helper list)
+
+readarray -t profiles < <(printf '%s\n' "$profiles_json" | python3 -c 'import json,sys; data=json.load(sys.stdin); [print(json.dumps(item)) for item in data]')
+
+active_count=0
+non_healthy=0
+declare -a warnings=()
+
+for item in "${profiles[@]}"; do
+    name=$(printf '%s\n' "$item" | python3 -c 'import json,sys; data=json.loads(sys.stdin.read()); print(data.get("name",""))')
+    status=$(printf '%s\n' "$item" | python3 -c 'import json,sys; data=json.loads(sys.stdin.read()); print(data.get("status",""))')
+    remaining_days=$(printf '%s\n' "$item" | python3 -c 'import json,sys; data=json.loads(sys.stdin.read()); print(data.get("remaining_days","0"))')
+    remaining_bw=$(printf '%s\n' "$item" | python3 -c 'import json,sys; data=json.loads(sys.stdin.read()); print(data.get("remaining_bandwidth_tb","0"))')
+
+    if [[ "$status" == "active" ]]; then
+        ((active_count++))
+    else
+        ((non_healthy++))
+    fi
+
+    if [[ "$remaining_days" -le 5 || $(python3 - <<PY
+val = float("$remaining_bw")
+print(1 if val <= 0.5 else 0)
+PY
+) -eq 1 ]]; then
+        warnings+=("$name|${remaining_days}|${remaining_bw}|${status}")
+    fi
+done
+
+heading "Dashboard Admin Project VPN"
+printf " CPU Usage        : %s%%\n" "$(cpu_usage)"
+printf " RAM Usage        : %s\n" "$(ram_usage)"
+printf " Disk Usage       : %s\n" "$(disk_usage)"
+printf " Profile Active   : %d\n" "$active_count"
+printf " Profile NonHealthy: %d\n" "$non_healthy"
+echo "--------------------------------------------"
+if ((${#warnings[@]} > 0)); then
+    echo " Peringatan (sisa hari <=5 atau sisa BW <=0.5TB)"
+    for row in "${warnings[@]}"; do
+        IFS='|' read -r name days bw status <<<"$row"
+        printf " - %-20s | Days: %s | BW: %s TB | Status: %s\n" "$name" "$days" "$bw" "$status"
+    done
+else
+    echo " Tidak ada profil yang mendekati limit."
+fi
+echo "--------------------------------------------"
+echo " Tools:"
+echo "  1) Tambah profile"
+echo "  2) Daftar profile"
+echo "  3) Perpanjang hari profile"
+echo "  4) Tambah bandwidth profile"
+echo "  5) Hapus profile"
+echo "  6) Backup & Restore"
+echo "  7) Login ke profile (SSH)"
+echo "  8) Keluar"
+echo "--------------------------------------------"
+
+read -rp "Pilih menu [1-8]: " choice
+case "$choice" in
+    1) "${LIB_DIR}/../add-profile" ;;
+    2) "${LIB_DIR}/../list-profile" ;;
+    3) "${LIB_DIR}/../extend-days-profile" ;;
+    4) "${LIB_DIR}/../extend-bw-profile" ;;
+    5) "${LIB_DIR}/../del-profile" ;;
+    6) "${LIB_DIR}/../backup-profile" ;;
+    7) "${LIB_DIR}/../login-profile" ;;
+    *) exit 0 ;;
+esac
