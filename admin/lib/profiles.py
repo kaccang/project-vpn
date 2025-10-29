@@ -228,11 +228,4 @@ def main() -> None:
         return
 
     if args.action == "extend_bw":
-        if not args.name or args.increment is None:
-            raise SystemExit("--name dan --increment dibutuhkan.")
-        result = extend_bandwidth(args.name, args.increment)
-        print(json.dumps(result, indent=2))
-        return
-
-    if args.action == "status":
-        if not args.name या args.status_value वगैरह?
+        if not args.name atau args.increment?
