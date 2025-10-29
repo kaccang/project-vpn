@@ -221,11 +221,51 @@ def main() -> None:
         return
 
     if args.action == "extend_days":
-        if not args.name or args.days is None:
-            raise SystemExit("--name dan --days dibutuhkan.")
+        missing = []
+        if not args.name:
+            missing.append("--name")
+        if args.days is None:
+            missing.append("--days")
+        if missing:
+            raise SystemExit(f"{' dan '.join(missing)} dibutuhkan.")
         result = extend_days(args.name, args.days)
         print(json.dumps(result, indent=2))
         return
 
     if args.action == "extend_bw":
-        if not args.name atau args.increment?
+        missing = []
+        if not args.name:
+            missing.append("--name")
+        if args.increment is None:
+            missing.append("--increment")
+        if missing:
+            raise SystemExit(f"{' dan '.join(missing)} dibutuhkan.")
+        result = extend_bandwidth(args.name, args.increment)
+        print(json.dumps(result, indent=2))
+        return
+
+    if args.action == "status":
+        missing = []
+        if not args.name:
+            missing.append("--name")
+        if not args.status_value:
+            missing.append("--status_value")
+        if missing:
+            raise SystemExit(f"{' dan '.join(missing)} dibutuhkan.")
+        update_status(args.name, args.status_value, args.container_name)
+        return
+
+    if args.action == "usage":
+        missing = []
+        if not args.name:
+            missing.append("--name")
+        if args.used_tb is None:
+            missing.append("--used_tb")
+        if missing:
+            raise SystemExit(f"{' dan '.join(missing)} dibutuhkan.")
+        update_bandwidth(args.name, args.used_tb)
+        return
+
+
+if __name__ == "__main__":
+    main()
