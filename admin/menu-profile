@@ -2,7 +2,8 @@
 
 set -euo pipefail
 
-LIB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/lib" && pwd)
+SCRIPT_DIR=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+LIB_DIR="${SCRIPT_DIR}/lib"
 source "${LIB_DIR}/common.sh"
 
 cpu_usage() {
@@ -86,12 +87,12 @@ echo "--------------------------------------------"
 
 read -rp "Pilih menu [1-8]: " choice
 case "$choice" in
-    1) "${LIB_DIR}/../add-profile" ;;
-    2) "${LIB_DIR}/../list-profile" ;;
-    3) "${LIB_DIR}/../extend-days-profile" ;;
-    4) "${LIB_DIR}/../extend-bw-profile" ;;
-    5) "${LIB_DIR}/../del-profile" ;;
-    6) "${LIB_DIR}/../backup-profile" ;;
-    7) "${LIB_DIR}/../login-profile" ;;
+    1) "${SCRIPT_DIR}/add-profile" ;;
+    2) "${SCRIPT_DIR}/list-profile" ;;
+    3) "${SCRIPT_DIR}/extend-days-profile" ;;
+    4) "${SCRIPT_DIR}/extend-bw-profile" ;;
+    5) "${SCRIPT_DIR}/del-profile" ;;
+    6) "${SCRIPT_DIR}/backup-profile" ;;
+    7) "${SCRIPT_DIR}/login-profile" ;;
     *) exit 0 ;;
 esac
