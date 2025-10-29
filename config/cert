@@ -1,0 +1,42 @@
+#!/bin/bash
+# Cek apakah domain sudah tersimpan
+
+# aku yakin script ini hanya berlaku untuk didalam container tapi dilapangan harus diluar container, kenapa karena ip ip untuk port 443 dan 80nya selalu terpakai gak boleh dc walaupun lagi dipakai
+
+# Ngeissue ssl apakah harus pilih salah satu dari 443/80 ? Untuk lets encrypt?, bukankan solusi untuk cert masalah iniMasalahnya port 80 dan 443 nya itu lagi dipake terus, apalagi ini satu vps ada  subvps atau profile gimana menurutmu, masa tiap mau install ssl, misalnya ada 4 subvps, 4nya harus mati dulu buat verifikasi 
+
+# itu nginxnya port 80 dan 443 kan? Reverse proxynya, shared juga karena vmess vless dan trojan nya pake port 80/443, Centralized ACME (Let’s Encrypt) Reverse Proxy"atau kalau mau lebih gampang:⚙️ “Shared ACME Challenge Handler
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+PROJECT_ROOT=$(cd "${SCRIPT_DIR}/.." && pwd)
+source "${PROJECT_ROOT}/script/lib/common.sh"
+source "${PROJECT_ROOT}/script/lib/service_manager.sh"
+
+DOMAIN_FILE="/etc/xray/domain"
+if [[ ! -f "$DOMAIN_FILE" ]]; then
+echo "Error: Domain file not found at $DOMAIN_FILE"
+exit 1
+fi
+
+DOMAIN=$(cat "$DOMAIN_FILE")
+if [[ -z "$DOMAIN" ]]; then
+echo "Error: Domain name is empty in $DOMAIN_FILE"
+exit 1
+fi
+
+echo "Starting SSL certificate renewal for $DOMAIN"
+
+# Hentikan nginx sebelum renew cert
+service_stop "$NGINX_SERVICE_NAME" || true
+
+# Jalankan renew SSL dengan acme.sh
+/root/.acme.sh/acme.sh --renew -d "$DOMAIN" --ecc --force
+/root/.acme.sh/acme.sh --installcert -d "$DOMAIN" \
+--fullchainpath /etc/xray/xray.crt \
+--keypath /etc/xray/xray.key --ecc
+
+# Mulai ulang layanan
+service_restart "$NGINX_SERVICE_NAME" || true
+service_restart "$XRAY_SERVICE_NAME" || true
+
+echo "SSL certificate renewal completed for $DOMAIN"
