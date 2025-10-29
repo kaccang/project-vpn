@@ -1,0 +1,141 @@
+#!/bin/bash
+
+set -euo pipefail
+
+LIB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/lib" && pwd)
+source "${LIB_DIR}/common.sh"
+
+select_profile() {
+    local purpose="$1"
+    local profiles_json
+    profiles_json=$(run_helper list)
+    readarray -t profiles < <(printf '%s\n' "$profiles_json" | python3 -c 'import json,sys; data=json.load(sys.stdin); [print(json.dumps(item)) for item in data]')
+    if [[ ${#profiles[@]} -eq 0 ]]; then
+        echo "Belum ada profile."
+        return 1
+    fi
+    echo "============================================"
+    echo " Pilih Profile untuk $purpose"
+    echo "============================================"
+    local idx=1
+    for item in "${profiles[@]}"; do
+        IDX=$idx python3 - <<'PY' <<<"$item"
+import json, os, sys
+data=json.loads(sys.stdin.read())
+idx=int(os.environ["IDX"])
+print("{no:>2}) {name:<15} Status:{status:<10} BW sisa:{bw:.2f}TB".format(
+    no=idx,
+    name=data.get("name",""),
+    status=data.get("status","unknown"),
+    bw=data.get("remaining_bandwidth_tb",0.0)
+))
+PY
+        idx=$((idx + 1))
+    done
+    local selection
+    while true; do
+        read -rp "Pilih nomor: " selection || return 1
+        if [[ "$selection" =~ ^[0-9]+$ ]] && (( selection >= 1 && selection <= ${#profiles[@]} )); then
+            break
+        fi
+        echo "Nomor tidak valid."
+    done
+    printf '%s\n' "${profiles[$((selection - 1))]}"
+}
+
+backup_single() {
+    local profile_json
+    if ! profile_json=$(select_profile "backup"); then
+        return
+    fi
+    local name container
+    name=$(printf '%s\n' "$profile_json" | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data.get("name",""))')
+    container=$(printf '%s\n' "$profile_json" | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data.get("container_name") or "")')
+    if [[ -z "$container" ]]; then
+        echo "Profile $name belum memiliki container."
+        return
+    fi
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "Docker tidak tersedia. Jalankan backup manual di host container."
+        return
+    fi
+    echo "Menjalankan backup di container $container ..."
+    docker exec "$container" bash -lc "/opt/project-vpn/config/backup" || echo "Backup gagal untuk $name"
+}
+
+backup_global() {
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "Docker tidak tersedia. Jalankan backup manual."
+        return
+    fi
+    profiles_json=$(run_helper list)
+    readarray -t profiles < <(printf '%s\n' "$profiles_json" | python3 -c 'import json,sys; data=json.load(sys.stdin); [print(json.dumps(item)) for item in data]')
+    for item in "${profiles[@]}"; do
+        container=$(printf '%s\n' "$item" | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data.get("container_name") or "")')
+        name=$(printf '%s\n' "$item" | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data.get("name",""))')
+        [[ -z "$container" ]] && continue
+        echo "Backup profile $name ..."
+        docker exec "$container" bash -lc "/opt/project-vpn/config/backup" || echo "Backup gagal untuk $name"
+    done
+    echo "Backup global selesai (lihat log di atas untuk error)."
+}
+
+restore_single() {
+    local profile_json
+    if ! profile_json=$(select_profile "restore"); then
+        return
+    fi
+    local name container
+    name=$(printf '%s\n' "$profile_json" | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data.get("name",""))')
+    container=$(printf '%s\n' "$profile_json" | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data.get("container_name") or "")')
+    restore=$(printf '%s\n' "$profile_json" | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data.get("restore_link") or "")')
+    read -rp "Restore link (${restore:-kosong}): " custom
+    if [[ -n "$custom" ]]; then
+        restore="$custom"
+    fi
+    if [[ -z "$restore" ]]; then
+        echo "Restore link tidak tersedia."
+        return
+    fi
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "Docker tidak tersedia. Jalankan restore manual."
+        return
+    fi
+    echo "Mengunduh dan mengekstrak backup di $container ..."
+    docker exec "$container" bash -lc "curl -fsSL '$restore' -o /tmp/backup.tar.gz && mkdir -p /etc/xray && tar -xf /tmp/backup.tar.gz -C /etc/xray && rm -f /tmp/backup.tar.gz" || echo "Restore gagal."
+}
+
+restore_global() {
+    read -rp "Masukkan direct link backup global (tar.gz): " link
+    if [[ -z "$link" ]]; then
+        echo "Link wajib diisi."
+        return
+    fi
+    echo "Unduh backup global ke ${DATA_DIR}..."
+    mkdir -p "$DATA_DIR"
+    curl -fsSL "$link" -o "${DATA_DIR}/global-backup.tar.gz" || { echo "Gagal mengunduh backup."; return; }
+    echo "Ekstrak data..."
+    tar -xf "${DATA_DIR}/global-backup.tar.gz" -C "$PROJECT_ROOT" || echo "Ekstrak gagal."
+    echo "Pastikan untuk menjalankan provisioning container kembali jika diperlukan."
+}
+
+echo "============================================"
+echo " Backup & Restore Manager"
+echo "============================================"
+echo " 1) Backup satu profile"
+echo " 2) Backup global"
+echo " 3) Restore satu profile"
+echo " 4) Restore global"
+echo " 5) Kembali"
+echo "--------------------------------------------"
+read -rp "Pilih menu [1-5]: " choice
+case "$choice" in
+    1) backup_single ;;
+    2) backup_global ;;
+    3) restore_single ;;
+    4) restore_global ;;
+esac
+
+read -n 1 -s -r -p "Tekan tombol untuk kembali ke menu"
+echo ""
+"${LIB_DIR}/../menu-profile"
