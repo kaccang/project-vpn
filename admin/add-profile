@@ -1,0 +1,299 @@
+#!/bin/bash
+
+set -euo pipefail
+
+LIB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/lib" && pwd)
+source "${LIB_DIR}/common.sh"
+
+have_docker() {
+    command -v docker >/dev/null 2>&1
+}
+
+run_in_container() {
+    local container="$1"
+    shift
+    docker exec "$container" bash -lc "$*"
+}
+
+copy_tree_to_container() {
+    local source_path="$1"
+    local container="$2"
+    local dest_path="$3"
+    docker cp "$source_path" "$container":"$dest_path" >/dev/null 2>&1
+}
+
+provision_container() {
+    local container="$1"
+    local domain="$2"
+    local password="$3"
+
+    local ok=true
+    echo "Menyalin skrip dan konfigurasi ke dalam container..."
+    run_in_container "$container" "mkdir -p /opt/project-vpn/script /opt/project-vpn/config /etc/xray /var/log/xray /var/run/sshd" || ok=false
+    copy_tree_to_container "${PROJECT_ROOT}/script/." "$container" "/opt/project-vpn/script" || ok=false
+    copy_tree_to_container "${PROJECT_ROOT}/config/." "$container" "/opt/project-vpn/config" || ok=false
+
+    echo "Menginstal paket dasar (supervisor, nginx, openssh-server, xray)..."
+    run_in_container "$container" "export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y supervisor nginx curl jq vnstat unzip xz-utils openssh-server ca-certificates >/dev/null" || ok=false
+
+    run_in_container "$container" "chmod +x /opt/project-vpn/script/* /opt/project-vpn/config/* || true"
+    run_in_container "$container" "cp /opt/project-vpn/config/config.json /etc/xray/config.json" || ok=false
+    run_in_container "$container" "cp /opt/project-vpn/config/nginx.conf /etc/nginx/nginx.conf" || ok=false
+    run_in_container "$container" "echo '$domain' > /etc/xray/domain" || ok=false
+    run_in_container "$container" "mkdir -p /var/log/xray && touch /var/log/xray/access.log /var/log/xray/error.log" || ok=false
+
+    echo "Mengatur akses SSH root..."
+    if ! docker exec "$container" env NEWPASS="$password" bash -lc "sed -i 's/^#\\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && echo \"root:\$NEWPASS\" | chpasswd"; then
+        ok=false
+    fi
+
+    echo "Memasang Xray (skip bila sudah ada)..."
+    run_in_container "$container" "command -v xray >/dev/null 2>&1 || (curl -fsSL https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh | bash -s -- install --without-geodata >/dev/null 2>&1)" || ok=false
+
+    echo "Membuat konfigurasi Supervisor..."
+    run_in_container "$container" "cat <<'SUPERVISOR' > /etc/supervisor/conf.d/project-vpn.conf
+[program:sshd]
+command=/usr/sbin/sshd -D
+autorestart=true
+stdout_logfile=/var/log/supervisor/sshd.out.log
+stderr_logfile=/var/log/supervisor/sshd.err.log
+
+[program:nginx]
+command=/usr/sbin/nginx -g \"daemon off;\"
+autorestart=true
+stdout_logfile=/var/log/supervisor/nginx.out.log
+stderr_logfile=/var/log/supervisor/nginx.err.log
+
+[program:xray]
+command=/usr/local/bin/xray run -config /etc/xray/config.json
+autorestart=true
+stdout_logfile=/var/log/supervisor/xray.out.log
+stderr_logfile=/var/log/supervisor/xray.err.log
+
+[program:xp-cleaner]
+command=/bin/bash -lc 'while sleep 3600; do /opt/project-vpn/script/xp; done'
+autorestart=true
+stdout_logfile=/var/log/supervisor/xp.out.log
+stderr_logfile=/var/log/supervisor/xp.err.log
+SUPERVISOR" || ok=false
+
+    run_in_container "$container" "grep -q '/opt/project-vpn/script/menu' /root/.bashrc || echo '/opt/project-vpn/script/menu' >> /root/.bashrc" || ok=false
+
+    echo "Menjalankan Supervisor di dalam container..."
+    run_in_container "$container" "pkill supervisord >/dev/null 2>&1 || true; supervisord -c /etc/supervisor/supervisord.conf >/dev/null 2>&1" || ok=false
+    run_in_container "$container" "supervisorctl reread >/dev/null 2>&1 && supervisorctl update >/dev/null 2>&1 && supervisorctl start sshd nginx xray xp-cleaner >/dev/null 2>&1" || ok=false
+
+    $ok && return 0 || return 1
+}
+
+profile_exists() {
+    local name="$1"
+    if PROJECT_ROOT="$PROJECT_ROOT" python3 "${LIB_DIR}/profiles.py" detail --name "$name" >/dev/null 2>&1; then
+        return 0
+    fi
+    return 1
+}
+
+used_ports() {
+    PROJECT_ROOT="$PROJECT_ROOT" python3 "${LIB_DIR}/profiles.py" list | python3 -c 'import json,sys; data=json.load(sys.stdin); [print(item["ssh_port"]) for item in data]'
+}
+
+port_available() {
+    local port="$1"
+    if used_ports | grep -qx "$port"; then
+        return 1
+    fi
+    if ss -tulpn 2>/dev/null | grep -q ":${port} "; then
+        return 1
+    fi
+    return 0
+}
+
+find_free_port() {
+    local port
+    for port in $(seq 2200 2333); do
+        if port_available "$port"; then
+            echo "$port"
+            return 0
+        fi
+    done
+    return 1
+}
+
+read_input() {
+    local prompt="$1"
+    local var
+    read -rp "$prompt" var
+    echo "$var"
+}
+
+heading "Tambah Profile Container"
+
+while true; do
+    username=$(read_input "User (2-20 karakter, unik): ")
+    username=${username// /}
+    [[ -n "$username" ]] || { echo "Nama tidak boleh kosong."; continue; }
+    [[ ${#username} -ge 2 && ${#username} -le 20 ]] || { echo "Panjang nama 2-20 karakter."; continue; }
+    [[ "$username" =~ ^[A-Za-z0-9_]+$ ]] || { echo "Hanya huruf, angka, underscore."; continue; }
+    if profile_exists "$username"; then
+        echo "Username sudah digunakan."
+        continue
+    fi
+    break
+done
+
+while true; do
+    domain=$(read_input "Domain/Subdomain: ")
+    [[ -n "$domain" ]] || { echo "Domain wajib diisi."; continue; }
+    break
+done
+
+while true; do
+    port_input=$(read_input "Port SSH (2200-2333, kosongkan untuk auto): ")
+    if [[ -z "$port_input" ]]; then
+        ssh_port=$(find_free_port) || { echo "Tidak ada port kosong tersisa."; exit 1; }
+        echo "Port otomatis dipilih: $ssh_port"
+        break
+    fi
+    if [[ "$port_input" =~ ^[0-9]+$ ]] && (( port_input >= 2200 && port_input <= 2333 )); then
+        if port_available "$port_input"; then
+            ssh_port="$port_input"
+            break
+        else
+            echo "Port $port_input sudah dipakai."
+        fi
+    else
+        echo "Masukkan angka 2200-2333."
+    fi
+done
+
+while true; do
+    cpu_percent=$(read_input "CPU (%) (contoh 50=0.5 core, 200=2 core): ")
+    if [[ "$cpu_percent" =~ ^[0-9]+$ && "$cpu_percent" -gt 0 ]]; then
+        break
+    fi
+    echo "Masukkan persentase CPU yang valid."
+done
+
+while true; do
+    ram_mb=$(read_input "RAM (MB): ")
+    if [[ "$ram_mb" =~ ^[0-9]+$ && "$ram_mb" -ge 128 ]]; then
+        break
+    fi
+    echo "Masukkan RAM minimal 128MB."
+done
+
+while true; do
+    read -srp "Password (min 5 char): " password
+    echo ""
+    if [[ ${#password} -ge 5 && ${#password} -le 100 ]]; then
+        break
+    fi
+    echo "Password 5-100 karakter."
+done
+
+while true; do
+    expired_days=$(read_input "Expired days: ")
+    if [[ "$expired_days" =~ ^[0-9]+$ && "$expired_days" -gt 0 ]]; then
+        break
+    fi
+    echo "Masukkan angka hari > 0."
+done
+
+while true; do
+    bandwidth_tb=$(read_input "Limit bandwidth (TB): ")
+    if [[ "$bandwidth_tb" =~ ^[0-9]+(\.[0-9]+)?$ && $(python3 - <<PY
+val=float("$bandwidth_tb")
+print(1 if val > 0 else 0)
+PY
+) -eq 1 ]]; then
+        break
+    fi
+    echo "Masukkan angka > 0."
+done
+
+restore_link=$(read_input "Restore link (opsional): ")
+
+expires_at=$(date -d "+${expired_days} days" +"%Y-%m-%d")
+
+echo "==================="
+echo "Profile yang akan dibuat"
+echo "Nama       : $username"
+echo "Domain     : $domain"
+echo "SSH Port   : $ssh_port"
+echo "CPU        : ${cpu_percent}%"
+echo "RAM        : ${ram_mb}MB"
+echo "Expired    : ${expires_at}"
+echo "Bandwidth  : ${bandwidth_tb} TB"
+echo "Restore    : ${restore_link:-<none>}"
+echo "==================="
+
+read -rp "Yakin create profile baru? (y/N): " confirm
+if [[ "${confirm,,}" != "y" ]]; then
+    echo "Dibatalkan."
+    exit 0
+fi
+
+create_cmd=(
+    create
+    --name "$username"
+    --domain "$domain"
+    --ssh_port "$ssh_port"
+    --cpu_percent "$cpu_percent"
+    --ram_mb "$ram_mb"
+    --password "$password"
+    --expires_at "$expires_at"
+    --bandwidth_limit_tb "$bandwidth_tb"
+)
+
+if [[ -n "$restore_link" ]]; then
+    create_cmd+=(--restore_link "$restore_link")
+fi
+
+run_helper "${create_cmd[@]}"
+
+container_name="vpn-${username}"
+
+provision_status="pending"
+if have_docker; then
+    cpu_limit=$(python3 - <<PY
+print("{:.2f}".format(int("$cpu_percent") / 100))
+PY
+)
+    echo "Membuat container docker ${container_name}..."
+    if docker run -d \
+        --restart unless-stopped \
+        --name "$container_name" \
+        --hostname "$username" \
+        --cpus "$cpu_limit" \
+        --memory "${ram_mb}m" \
+        -p "${ssh_port}:22" \
+        -e "PROFILE_NAME=$username" \
+        ubuntu:24.04 sleep infinity >/dev/null 2>&1; then
+
+        if provision_container "$container_name" "$domain" "$password"; then
+            provision_status="active"
+        else
+            echo "Peringatan: provisioning container tidak selesai sempurna. Silakan verifikasi manual."
+            provision_status="degraded"
+        fi
+    else
+        echo "Gagal membuat container. Cek instalasi docker."
+        provision_status="failed"
+    fi
+else
+    echo "Docker tidak ditemukan. Lewati provisioning container."
+fi
+
+if [[ "$provision_status" == "failed" ]]; then
+    container_name=""
+fi
+
+run_helper status --name "$username" --status_value "$provision_status" --container_name "$container_name"
+
+echo "Profile berhasil dibuat dengan status: $provision_status"
+echo "Gunakan menu admin untuk langkah lanjutan."
+
+read -n 1 -s -r -p "Tekan tombol untuk kembali ke menu"
+echo ""
+"${LIB_DIR}/../menu-profile"
